@@ -1,52 +1,55 @@
 import pandas as pd
 import streamlit as st
 
-from fg_data import url_108_zips, url_108_atc, url_108_steamer, url_108_fangraphsdc, get_data_as_df, ProjectionSystem
+from fg_data import get_all_data, BernackiLeague, COLS_TO_AVG, GROUPERS, POSITION_TYPES, PROJECTION_SYSTEMS
 
 st.set_page_config(layout="wide")
 
-POSITIONS = ('C', '1B', '2B', '3B', 'SS', 'OF', 'DH')
 
-proj_urls = {
-    'ZIPS': url_108_zips,
-    'ATC': url_108_atc,
-    'STEAMER': url_108_steamer,
-    'FANGRAPHSDC': url_108_fangraphsdc
-}
+@st.cache_data
+def get_data() -> dict[tuple[str, str]: pd.DataFrame]:
+    # return pd.DataFrame(hitter_data), pd.DataFrame(pitcher_data)
+    return get_all_data()
 
-pos_endpoint_map = {
-    'Hitters': 'hit',
-    'Pitchers': 'pit',
-    'C': 'C',
-    '1B': '1B',
-    '2B': '2B',
-    '3B': '3B',
-    'SS': 'SS',
-    'OF': 'OF',
-    'UT': 'UT'
-}
+def get_correct_df_and_value_cols() -> tuple[pd.DataFrame, list[str]]:
+    hit_or_pitch = 'Pitchers' if sel_position in ('Pitchers', 'SP', 'RP') else 'Hitters'
+    lg_format = 'Points' if sel_league == BernackiLeague.ONE_OH_EIGHT.name else 'Roto'
+    return data[(hit_or_pitch, lg_format)], COLS_TO_AVG[(hit_or_pitch, lg_format)]
 
-sel_proj_systems: list[str] = st.multiselect('Projection Systems:', sorted([m for m in ProjectionSystem.__members__]))
-sel_pos: str = st.segmented_control('HOP', pos_endpoint_map.keys(),
-                                                  label_visibility='hidden', default='Hitters')
+def show_table(my_df: pd.DataFrame, my_value_cols: list[str]) -> None:
+    # filter based on user-selected: projection system, league (points/roto), and position (hit/pit or actual position)
+    filtered_df = my_df[my_df['Projection System'].isin(sel_proj_system)]
+    if sel_position == 'Hitters':
+        filtered_df = filtered_df[filtered_df['Hitter/Pitcher'] == 'hit']
+    elif sel_position == 'Pitchers':
+        filtered_df = filtered_df[filtered_df['Hitter/Pitcher'] == 'pit']
+    elif sel_position == 'UT':
+        filtered_df = filtered_df[filtered_df['POS'] == 'DH']
+    else:
+        filtered_df = filtered_df[df_raw['POS'].str.contains(sel_position, na=False, case=False)]
 
-if sel_proj_systems:
-    df_raw: pd.DataFrame = get_data_as_df([proj_urls[ps] for ps in sel_proj_systems])
-    df_raw = df_raw[['playerid', 'PlayerName', 'Team', 'POS', 'ADP', 'PA', 'rPTS', 'PTS', 'aPOS', 'FPTS', 'Dollars']]
-    st.write(f"Player Projections: {len(df_raw)}. Unique Players: {df_raw['playerid'].nunique()}")
-    groupers = ['playerid', 'PlayerName', 'Team', 'POS', 'ADP']
-    values_for_averaging = ['PA', 'rPTS', 'PTS', 'aPOS', 'FPTS', 'Dollars']
-    df = df_raw.groupby(groupers)[values_for_averaging].mean().round(0).reset_index()
-    df.sort_values(by='Dollars', ascending=False, inplace=True)
-    df.round(0)
-    st.subheader('C')
+    # for columns, use the common groupers (name, team, etc.) & those specific to each dataframe (runs, wins, etc.)
+    filtered_df = filtered_df[GROUPERS + my_value_cols]
+
+    # group the data, round values to zero, sort by Dollars desc
+    df = filtered_df.groupby(GROUPERS)[my_value_cols].mean().round(0).reset_index().sort_values(by='Dollars', ascending=False)
+
     st.dataframe(df, hide_index=True, use_container_width=True)
 
 
-# pull the data once for all projection systems -- pitchers and hitters
-# pitchers will have different columns than hitters
-# based on the selected projection system & position, filter what dataframes are used in pd.concat()
-# filter position based on 'POS' column
-# handle UT as only DH
+data = get_data()
 
+POSITIONS = ('Hitters', 'Pitchers', 'C', '1B', '2B', '3B', 'SS', 'OF', 'UT', 'SP', 'RP')
 
+# UI
+st.subheader('Bernacki FBB Draft Value Assistant')
+sel_league = st.segmented_control('League', [_ for _ in BernackiLeague.__members__], label_visibility='hidden')
+sel_proj_system = st.multiselect('Projection System(s)', PROJECTION_SYSTEMS)
+sel_position = st.segmented_control('Position', POSITIONS, label_visibility='hidden')
+
+if not sel_proj_system or not sel_league or not sel_position:
+    st.error("Please select at least one projection system, a position, and a league")
+else:
+    # get the correct dataframe (there are four: Hitter-Roto, Hitter-Points, Pitcher-Roto, Pitcher-Points)
+    df_raw, value_cols = get_correct_df_and_value_cols()
+    show_table(df_raw, value_cols)
